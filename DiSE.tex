@@ -1,0 +1,113 @@
+
+\documentclass[a4paper,8pt,twocolumn]{scrartcl}
+\usepackage[utf8x]{inputenc}
+\usepackage{wrapfig}
+\usepackage{graphicx}
+
+%opening
+\title{DiSE -- Distributed Search Engine}
+\author{Bernd Fix, Paul H\"ansch \\ \tt{<brf@hoi-polloi.org>,<paul@plutz.net>}}
+
+\setlength{\parskip}{3pt}
+
+\begin{document}
+\bibliographystyle{plain}
+
+\maketitle
+
+\section{Abstract}
+
+
+\section{Distributed Hash Tree}
+
+DiSE will make use of the basic Kademlia~\cite{Maymounkov:2002:KPI:646334.687801} Distributed Hashtree design that is also used in a lot other P2P-oriented applications like Bittorrent, Retroshare or GNUtella. For the special requirements and constraints of a distributed search engine there are small modifications and extensions to the standard Kademlia concepts and processes that will be explained where applicable.
+
+\subsection{Address space}
+
+In DiSE every node, every search term and every indexed document has an address in a $2^n$ address space, which is closely linked to a cryptographic hash function $H()$ that results in values of $n$ bits size. Like Kademlia we choose $n = 160$; but we use the {\tt RIPEMD-160}\footnote{No known hash collisions} hash function instead of {\tt MD5}.
+
+\subsubsection{Node address}
+
+The address of a node is set by the node itself at setup and will not change over time. Due to attack vectors (described in chapter) the node should not be allowed to choose any address as it likes; on the other hand other nodes should be able to check if a node address is ``randomly choosen'' from the available address space.
+
+We therefore propose the following algorithm for address calculation by a node: There are two functions {\tt calc\_addr} and {\tt check\_addr} with asymmetrical runtime behaviour; calculating an address takes a long time (several minutes), whereas checking an address for validity is very fast.  This asymmetric runtime behaviour prevents a rogue node from choosing an address it needs to attack the search engine processes, because the time need to compute a suitable address for an attack by calculating node addresses in a loop will take a very, very long time.
+
+To achieve the desired asymmetry, every node also has a {\tt name}; the node name is a string of 16 to 40 characters freely choosen by the node owner at setup.
+
+\begin{description}
+ \item [{\tt calc\_addr}] Calculate $a = H(name)$ and store the lower $160-m$ bits in $b$. Randomly modify the $m$ upper bits of $b$ until the criteria $H(b) < t$ is met, where $t$ is a given treshold. The address $A$ of the node is set to the value of $b$. The values for $m$ and $t$ are choosen such that the computation of an adress takes some defined time (say 10 minutes) on standard hardware.
+ \item [{\tt check\_addr}] Calculate $a = H(name)$ and check that the lower $160 - m$ bits of $a$ are identical to the lower $160 - m$ bits of the node address $A$. Calculate $b = H(A)$ and check that $b < t$. If both criteria are met by an address $A$, the address is considered valid.
+\end{description}
+
+\subsubsection{Search term address}\label{search_term_addr}
+
+The address $A$ of a search term $w$ is simply the hash value of $w$: $A = H(w)$
+
+\subsubsection{Indexed document address}\label{indexed_document_addr}
+
+The address $A$ of an indexed document is computed from the hash of the metadata over the document.
+
+\subsection{Metric}
+
+The Kademlia metric is based on the $XOR$ function that -- aside from being extermely fast -- provides all the required distance properties. Let $d(x,y)$ denote the distance function and let $A$, $B$ and $C$ be addresses in the address space, the following properties apply:
+
+\begin{enumerate}
+  \item $d(A,A) = 0$ (identity)
+  \item $d(A,B) = d(B,A)$ (symmetry)
+  \item $d(A,C) \leq d(A,B) + d(B,C)$ (triangle inequality)
+\end{enumerate}
+
+\subsection{Routing}
+
+Because a node does not know all the other nodes in the network, it requires a routing algorithm to find nodes with given properties (``close to address A''). In Kademlia every node has a routing table that can be used to find these unkown nodes.
+
+A routing table is a list of {\it buckets} that together gaplessly cover the whole range of the address space. An empty table contains one bucket that covers the whole range from $0\cdots 2^n-1$. Every bucket defines its bounds $min$ and $max$; every address $A$ in a bucket satisfies the equation $min \leq A < max$. The initial bucket (empty routing table) has the bounds $min = 0$ and $max = 2^n$.
+
+The routing table at startup is filled with its own node address $A$ and at least one other node address.\footnote{These additional addresses are either retrieved from an IRC channel where nodes announce their own address periodically or from a bootstrap server.} Whenever a node ``learns`` about a new node address $B$, it tries to incorporate this address into the routing table using the following rules:
+
+\begin{enumerate}
+ \item Find the bucket in the routing table that could hold the address $B$ (based on the bounds of the bucket)
+ \item If the found bucket contains less than $k$ addresses, add $B$ to that bucket.
+ \item If the found bucket contains $k$ addresses and also its won address $A$, the bucket is split into two buckets of equal size. The process than restarts at step 1.
+\end{enumerate}
+
+These rules make sure that a node prefers to keep addresses in its routing table that are ''close'' to its own address; only a few addresses will be kept for nodes far away. The routing table is limited in size (due to the rules) and will not accept new addresses after a while.
+
+If a node detect that a node from the routing table went offline, it will remove the address of that node from the table so another node can take its place. A node is also removed if is suspected of rogue behaviour (see chapter ???).
+
+There is one routing function {\tt find\_node} available to find (a probably unknown) nodes with address $A$ that is the closest node to a given address $T$\footnote{The traget address $T$ in DiSE is usually the address of a search term or an indexed document}. It takes two addresses $T$ and $B$ as its arguments; $B$ denotes the address from the local routing table that is closest to $T$. The routing function now asks the node $B$ to return the address of a node it knows that is closest to $T$ (recursive call). The returned value is either an address $C$ from the routing table of $B$ or the address $B$ itself; in the later case the recursion ends and $B$ is the wanted node $A$ closest to $T$.
+
+\section{Storage}
+
+Storage nodes are utilized to store indexing results from crawlers; these results will later be used to answer search requests. Every storage node defines its individual amount of storage it will keep presistent over time and it will store two different types of data:
+
+\begin{description}
+ \item [snapshots] are compressed and enriched web resources analyzed and indexed by crawlers. Each snapshot is identified by an address (see \ref{indexed_document_addr})
+ \item [search term results] also have addresses (see \ref{search_term_addr}) and are lists of $(search term,snapshot address,relevance,count)$ tuples. Each entry defines a (numerical) relevance of the search term in the addressed snapshot document and the number of (independent) crawlers that have submitted this data is counted (a higher count gives a higher confidence in the relevance of the search term).
+\end{description}
+
+Let $a$ denote the amount of data (with the same address) that needs to be pushed to storage nodes. Because nodes can fail or go offline, data will be stored with a given redundancy factor $r$; so the total amount $n = a \cdot r$ must be stored in the DHT to compensate such drop-outs. The exact value of $r$ is based on the ``life-expectancy'' of a normal node on the network.
+
+The distribution of the data into the DHT is done in the following way: We first build a list of nodes are closest to the address $A$ of the data to be stored. For each such node add its free storage capacity $c$ to the available storage space $s$. Add nodes as long as $s < n$. The list is than used to actually transfer the data to the DHT nodes for storage.
+
+Nodes in a list form a group (for the given data address $A$); each node within the group knows of all other nodes in the group. Such groups are responsible for replication of their data if nodes drop out of the group for too long (see chapter ???).
+
+\subsection{Replication}
+
+(TODO: How to replicate data? How to handle new nodes going online that address-wise fall into exisiting groups?)
+
+\section{Crawling}
+
+(TODO: How to crawl the web)
+
+\subsection{Computing relevance}
+
+\section{Search engine}
+
+(TODO: How search requests are processed)
+
+\subsection{Ranking}
+
+
+%\bibliography{Master}
+\end{document}

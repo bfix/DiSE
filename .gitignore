@@ -30,3 +30,6 @@
 *.vrb
 *.xdy
 *.tdo
+/.project
+/DiSE.pdf
+/clean.sh
